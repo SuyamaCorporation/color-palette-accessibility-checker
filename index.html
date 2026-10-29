@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>カラーパレット アクセシビリティ チェッカー</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50 min-h-screen p-4">
+  <div class="max-w-5xl mx-auto">
+    <h1 class="text-2xl font-bold text-gray-800 mb-2">カラーパレット アクセシビリティ チェッカー</h1>
+    <p class="text-sm text-gray-500 mb-6">WCAG 2.1 コントラスト比を全組み合わせでマトリクス表示。最大8色登録可能。</p>
+
+    <!-- カラー登録 -->
+    <div class="bg-white rounded-lg shadow p-6 mb-6">
+      <h2 class="text-lg font-semibold text-gray-700 mb-4">カラー登録（最大8色）</h2>
+      <div id="colorInputs" class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4"></div>
+      <div class="flex gap-3">
+        <button id="addColorBtn" class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded focus:outline-none focus:ring-2 focus:ring-blue-400" tabindex="0" aria-label="色を追加">+ 色を追加</button>
+        <button id="saveBtn" class="bg-green-600 hover:bg-green-700 text-white text-sm font-medium px-4 py-2 rounded focus:outline-none focus:ring-2 focus:ring-green-400" tabindex="0" aria-label="保存">保存</button>
+      </div>
+    </div>
+
+    <!-- 凡例 -->
+    <div class="bg-white rounded-lg shadow p-4 mb-6 flex flex-wrap gap-4 text-sm">
+      <span class="flex items-center gap-1"><span class="w-8 h-5 rounded bg-green-600 inline-block"></span><strong class="text-green-700">AAA</strong> ≥ 7.0</span>
+      <span class="flex items-center gap-1"><span class="w-8 h-5 rounded bg-blue-500 inline-block"></span><strong class="text-blue-600">AA</strong> ≥ 4.5 (通常) / ≥ 3.0 (大テキスト)</span>
+      <span class="flex items-center gap-1"><span class="w-8 h-5 rounded bg-yellow-500 inline-block"></span><strong class="text-yellow-600">AA-LG</strong> ≥ 3.0 大テキストのみ</span>
+      <span class="flex items-center gap-1"><span class="w-8 h-5 rounded bg-red-500 inline-block"></span><strong class="text-red-600">FAIL</strong> &lt; 3.0</span>
+    </div>
+
+    <!-- マトリクス -->
+    <div class="bg-white rounded-lg shadow p-6 mb-6">
+      <h2 class="text-lg font-semibold text-gray-700 mb-4">コントラスト比マトリクス</h2>
+      <div class="overflow-x-auto">
+        <div id="matrixContainer"></div>
+      </div>
+    </div>
+
+    <!-- 修正候補 -->
+    <div class="bg-white rounded-lg shadow p-6">
+      <h2 class="text-lg font-semibold text-gray-700 mb-4">FAIL ペア 修正候補（明度調整）</h2>
+      <div id="suggestions" class="space-y-3"></div>
+    </div>
+  </div>
+
+  <script>
+    let colors = [
+      { hex: '#1a1a2e', name: 'Dark Navy' },
+      { hex: '#e94560', name: 'Crimson' },
+      { hex: '#0f3460', name: 'Deep Blue' },
+      { hex: '#ffffff', name: 'White' },
+    ];
+
+    function hexToRgb(hex) {
+      const c = hex.replace('#', '');
+      const len = c.length === 3 ? 1 : 2;
+      const r = parseInt(c.slice(0, len) + (len === 1 ? c[0] : ''), 16);
+      const g = parseInt(c.slice(len, len*2) + (len === 1 ? c[len] : ''), 16);
+      const b = parseInt(c.slice(len*2, len*3) + (len === 1 ? c[len*2] : ''), 16);
+      if (c.length === 3) {
+        return {
+          r: parseInt(c[0]+c[0], 16),
+          g: parseInt(c[1]+c[1], 16),
+          b: parseInt(c[2]+c[2], 16),
+        };
+      }
+      return { r: parseInt(c.slice(0,2),16), g: parseInt(c.slice(2,4),16), b: parseInt(c.slice(4,6),16) };
+    }
+
+    function linearize(v) {
+      const s = v / 255;
+      return s <= 0.04045 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+    }
+
+    function luminance(hex) {
+      const { r, g, b } = hexToRgb(hex);
+      return 0.2126 * linearize(r) + 0.7152 * linearize(g) + 0.0722 * linearize(b);
+    }
+
+    function contrastRatio(hex1, hex2) {
+      const l1 = luminance(hex1);
+      const l2 = luminance(hex2);
+      const lighter = Math.max(l1, l2);
+      const darker = Math.min(l1, l2);
+      return (lighter + 0.05) / (darker + 0.05);
+    }
+
+    function wcagLevel(ratio) {
+      if (ratio >= 7.0) return { level: 'AAA', cls: 'bg-green-600 text-white', short: 'AAA' };
+      if (ratio >= 4.5) return { level: 'AA', cls: 'bg-blue-500 text-white', short: 'AA' };
+      if (ratio >= 3.0) return { level: 'AA-LG', cls: 'bg-yellow-400 text-gray-800', short: 'AA大' };
+      return { level: 'FAIL', cls: 'bg-red-500 text-white', short: 'FAIL' };
+    }
+
+    function hexFromRgb(r, g, b) {
+      return '#' + [r, g, b].map(v => Math.round(Math.max(0, Math.min(255, v))).toString(16).padStart(2,'0')).join('');
+    }
+
+    function adjustLuminanceToPass(fgHex, bgHex, targetRatio) {
+      // 暗い色を更に暗く、明るい色を更に明るく
+      const lFg = luminance(fgHex);
+      const lBg = luminance(bgHex);
+      const { r, g, b } = hexToRgb(lFg < lBg ? fgHex : bgHex);
+      // 対象色を暗い側と仮定して darker を下げる
+      for (let factor = 0.9; factor > 0.01; factor -= 0.05) {
+        const candidate = hexFromRgb(r * factor, g * factor, b * factor);
+        const cr = lFg < lBg ? contrastRatio(candidate, bgHex) : contrastRatio(fgHex, candidate);
+        if (cr >= targetRatio) return candidate;
+      }
+      return null;
+    }
+
+    function renderColorInputs() {
+      const cont = document.getElementById('colorInputs');
+      while (cont.firstChild) cont.removeChild(cont.firstChild);
+      colors.forEach((c, i) => {
+        const div = document.createElement('div');
+        div.className = 'flex items-center gap-2 p-2 border border-gray-200 rounded';
+
+        const picker = document.createElement('input');
+        picker.type = 'color';
+        picker.value = c.hex;
+        picker.className = 'w-10 h-10 rounded cursor-pointer border border-gray-300';
+        picker.setAttribute('aria-label', `${i+1}色目 カラーピッカー`);
+        picker.addEventListener('input', () => { colors[i].hex = picker.value; renderMatrix(); renderSuggestions(); });
+
+        const nameInp = document.createElement('input');
+        nameInp.type = 'text';
+        nameInp.value = c.name;
+        nameInp.placeholder = '色名';
+        nameInp.className = 'flex-1 border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-300';
+        nameInp.setAttribute('aria-label', `${i+1}色目 色名`);
+        nameInp.addEventListener('input', () => { colors[i].name = nameInp.value; renderMatrix(); });
+
+        const delBtn = document.createElement('button');
+        delBtn.textContent = '×';
+        delBtn.className = 'text-gray-400 hover:text-red-500 text-lg font-bold leading-none focus:outline-none';
+        delBtn.setAttribute('aria-label', `${c.name}を削除`);
+        delBtn.setAttribute('tabindex', '0');
+        delBtn.addEventListener('click', () => { colors.splice(i, 1); renderAll(); });
+
+        div.appendChild(picker);
+        div.appendChild(nameInp);
+        div.appendChild(delBtn);
+        cont.appendChild(div);
+      });
+
+      document.getElementById('addColorBtn').disabled = colors.length >= 8;
+      document.getElementById('addColorBtn').className = colors.length >= 8
+        ? 'bg-gray-300 text-gray-500 text-sm font-medium px-4 py-2 rounded cursor-not-allowed'
+        : 'bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded focus:outline-none focus:ring-2 focus:ring-blue-400';
+    }
+
+    function renderMatrix() {
+      const cont = document.getElementById('matrixContainer');
+      while (cont.firstChild) cont.removeChild(cont.firstChild);
+      if (colors.length < 2) {
+        const p = document.createElement('p');
+        p.className = 'text-gray-400 text-sm py-4';
+        p.textContent = '2色以上登録するとマトリクスが表示されます。';
+        cont.appendChild(p);
+        return;
+      }
+      const table = document.createElement('table');
+      table.className = 'border-collapse text-xs';
+      table.setAttribute('role', 'grid');
+      table.setAttribute('aria-label', 'コントラスト比マトリクス');
+
+      // header row
+      const thead = document.createElement('thead');
+      const htr = document.createElement('tr');
+      const th0 = document.createElement('th');
+      th0.scope = 'col';
+      th0.className = 'w-24 p-1';
+      htr.appendChild(th0);
+      colors.forEach(c => {
+        const th = document.createElement('th');
+        th.scope = 'col';
+        th.className = 'p-1 text-center min-w-20';
+        const swatch = document.createElement('div');
+        swatch.className = 'w-full h-5 rounded mb-1';
+        swatch.style.backgroundColor = c.hex;
+        const nm = document.createElement('div');
+        nm.className = 'text-gray-600 text-xs break-words max-w-20';
+        nm.textContent = c.name || c.hex;
+        th.appendChild(swatch);
+        th.appendChild(nm);
+        htr.appendChild(th);
+      });
+      thead.appendChild(htr);
+      table.appendChild(thead);
+
+      const tbody = document.createElement('tbody');
+      colors.forEach((rowColor, ri) => {
+        const tr = document.createElement('tr');
+        // row header
+        const rth = document.createElement('th');
+        rth.scope = 'row';
+        rth.className = 'p-1 text-right';
+        const rswatch = document.createElement('div');
+        rswatch.className = 'w-full h-5 rounded mb-1';
+        rswatch.style.backgroundColor = rowColor.hex;
+        const rnm = document.createElement('div');
+        rnm.className = 'text-gray-600 text-xs';
+        rnm.textContent = rowColor.name || rowColor.hex;
+        rth.appendChild(rswatch);
+        rth.appendChild(rnm);
+        tr.appendChild(rth);
+
+        colors.forEach((colColor, ci) => {
+          const td = document.createElement('td');
+          td.className = 'p-1 text-center';
+          if (ri === ci) {
+            td.className += ' bg-gray-100';
+            td.textContent = '—';
+          } else {
+            const ratio = contrastRatio(rowColor.hex, colColor.hex);
+            const { level, cls, short } = wcagLevel(ratio);
+            const inner = document.createElement('div');
+            inner.className = `rounded px-1 py-0.5 text-xs font-bold ${cls}`;
+            inner.textContent = short;
+            inner.title = `${rowColor.name} on ${colColor.name}: ${ratio.toFixed(2)}:1 (${level})`;
+            const ratioDiv = document.createElement('div');
+            ratioDiv.className = 'text-gray-500 text-xs mt-0.5';
+            ratioDiv.textContent = ratio.toFixed(2);
+            td.appendChild(inner);
+            td.appendChild(ratioDiv);
+          }
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      cont.appendChild(table);
+    }
+
+    function renderSuggestions() {
+      const cont = document.getElementById('suggestions');
+      while (cont.firstChild) cont.removeChild(cont.firstChild);
+      const fails = [];
+      colors.forEach((c1, i) => {
+        colors.forEach((c2, j) => {
+          if (i >= j) return;
+          const r = contrastRatio(c1.hex, c2.hex);
+          if (r < 4.5) fails.push({ c1, c2, ratio: r });
+        });
+      });
+      if (fails.length === 0) {
+        const p = document.createElement('p');
+        p.className = 'text-green-600 font-medium';
+        p.textContent = 'FAIL / AA未満のペアはありません。';
+        cont.appendChild(p);
+        return;
+      }
+      fails.forEach(({ c1, c2, ratio }) => {
+        const div = document.createElement('div');
+        div.className = 'border border-red-200 rounded-lg p-4 bg-red-50';
+
+        const title = document.createElement('div');
+        title.className = 'font-semibold text-red-700 mb-2 text-sm';
+        title.textContent = `${c1.name} (${c1.hex}) × ${c2.name} (${c2.hex}) — ${ratio.toFixed(2)}:1`;
+        div.appendChild(title);
+
+        const previewDiv = document.createElement('div');
+        previewDiv.className = 'mb-3 flex gap-3';
+        const p1 = document.createElement('div');
+        p1.className = 'flex-1 rounded p-3 text-sm font-medium';
+        p1.style.backgroundColor = c2.hex;
+        p1.style.color = c1.hex;
+        p1.textContent = `${c1.name} on ${c2.name}`;
+        const p2 = document.createElement('div');
+        p2.className = 'flex-1 rounded p-3 text-sm font-medium';
+        p2.style.backgroundColor = c1.hex;
+        p2.style.color = c2.hex;
+        p2.textContent = `${c2.name} on ${c1.name}`;
+        previewDiv.appendChild(p1);
+        previewDiv.appendChild(p2);
+        div.appendChild(previewDiv);
+
+        // 修正候補
+        const suggested = adjustLuminanceToPass(c1.hex, c2.hex, 4.5);
+        if (suggested) {
+          const sug = document.createElement('div');
+          sug.className = 'text-xs text-gray-600 mt-1';
+          const swatchWrap = document.createElement('span');
+          swatchWrap.className = 'inline-flex items-center gap-2';
+          const sw = document.createElement('span');
+          sw.className = 'inline-block w-5 h-5 rounded border border-gray-300 align-middle';
+          sw.style.backgroundColor = suggested;
+          const lbl = document.createElement('span');
+          lbl.textContent = `修正候補: ${suggested} (暗い側の明度を下げてAA達成)`;
+          swatchWrap.appendChild(sw);
+          swatchWrap.appendChild(lbl);
+          sug.appendChild(swatchWrap);
+          div.appendChild(sug);
+        }
+        cont.appendChild(div);
+      });
+    }
+
+    function renderAll() {
+      renderColorInputs();
+      renderMatrix();
+      renderSuggestions();
+    }
+
+    document.getElementById('addColorBtn').addEventListener('click', () => {
+      if (colors.length >= 8) return;
+      colors.push({ hex: '#' + Math.floor(Math.random()*0xffffff).toString(16).padStart(6,'0'), name: `色${colors.length+1}` });
+      renderAll();
+    });
+
+    document.getElementById('saveBtn').addEventListener('click', () => {
+      localStorage.setItem('color_a11y_v1', JSON.stringify(colors));
+      const btn = document.getElementById('saveBtn');
+      btn.textContent = '保存済み!';
+      setTimeout(() => { btn.textContent = '保存'; }, 1500);
+    });
+
+    try {
+      const d = localStorage.getItem('color_a11y_v1');
+      if (d) colors = JSON.parse(d);
+    } catch(e) {}
+
+    renderAll();
+  </script>
+</body>
+</html>
